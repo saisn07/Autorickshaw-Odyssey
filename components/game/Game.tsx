@@ -31,8 +31,9 @@ interface Raindrop {
 interface Obstacle {
   x: number
   y: number
-  type: "pothole" | "cow" | "traffic"
+  type: "pothole" | "cow" | "barricade"
   size?: number // For varied pothole sizes
+  lane?: number // For lane-specific obstacles like barricades
 }
 
 interface SideVehicle {
@@ -44,6 +45,17 @@ interface SideVehicle {
   lane: number
   honking: boolean
   honkTimer: number
+}
+
+interface Notification {
+  text: string
+  timer: number
+  color: string
+}
+
+interface Landmark {
+  type: "residential" | "school" | "hospital" | "garden" | "market"
+  startScore: number
 }
 
 interface WaterClog {
@@ -94,10 +106,21 @@ export default function Game() {
     lastCowSpawn: 0,
     lastPotholeSpawn: 0,
     lastVehicleSpawn: 0,
+    lastBarricadeSpawn: 0,
     currentLane: 0, // 0 = top, 1 = bottom
     waterClogTimer: 0,
     autoFrame: 0,
     wheelRotation: 0,
+    // Traffic signal and game start
+    trafficSignal: "red" as "red" | "yellow" | "green",
+    signalTimer: 0,
+    gameStarted: false,
+    // Notifications
+    notifications: [] as Notification[],
+    // Difficulty level and landmarks
+    currentLevel: 1,
+    currentLandmark: { type: "residential", startScore: 0 } as Landmark,
+    nextLandmarkScore: 500,
   })
 
   const jump = useCallback(() => {
@@ -122,7 +145,7 @@ export default function Game() {
     game.waterClogs = []
     game.sideVehicles = []
     game.groundOffset = 0
-    game.speed = 5
+    game.speed = 0 // Start at 0, will accelerate after green light
     game.baseSpeed = 5
     game.isBraking = false
     game.score = 0
@@ -133,8 +156,19 @@ export default function Game() {
     game.lastCowSpawn = 0
     game.lastPotholeSpawn = 0
     game.lastVehicleSpawn = 0
+    game.lastBarricadeSpawn = 0
     game.currentLane = 0
     game.waterClogTimer = 0
+    // Traffic signal reset
+    game.trafficSignal = "red"
+    game.signalTimer = 0
+    game.gameStarted = false
+    // Notifications
+    game.notifications = []
+    // Level reset
+    game.currentLevel = 1
+    game.currentLandmark = { type: "residential", startScore: 0 }
+    game.nextLandmarkScore = 500
     setScore(0)
     setGameState("playing")
   }, [])
@@ -317,31 +351,42 @@ export default function Game() {
       }
     }
 
-    // Spawn obstacle - more realistic Bombay traffic with varied timing
+    // Spawn obstacle - progressive difficulty based on score/level
     const spawnObstacle = () => {
       game.lastCowSpawn++
       game.lastPotholeSpawn++
+      game.lastBarricadeSpawn++
       
+      const level = game.currentLevel
       const random = Math.random()
-      let type: "pothole" | "cow" | "traffic"
+      let type: "pothole" | "cow" | "barricade"
       let size = 1
+      let lane: number | undefined = undefined
       
-      // Cow only spawns rarely with very random timing
-      if (random < 0.08 && game.lastCowSpawn > 500 + Math.random() * 800) {
+      // Progressive difficulty:
+      // Level 1 (0-500): Mostly barricades, few dogs on footpath
+      // Level 2 (500-1500): Add cows occasionally
+      // Level 3 (1500-3000): More potholes, thicker traffic
+      // Level 4 (3000+): Everything intensifies - potholes + heavy traffic
+      
+      if (level >= 2 && random < 0.06 && game.lastCowSpawn > 600 + Math.random() * 600) {
         type = "cow"
         game.lastCowSpawn = 0
-      } 
-      // Potholes with varied sizes and random intervals
-      else if (random < 0.4 && game.lastPotholeSpawn > 100 + Math.random() * 300) {
+      }
+      // Barricades - lane specific (more common at all levels)
+      else if (random < 0.35 && game.lastBarricadeSpawn > 150 + Math.random() * 200) {
+        type = "barricade"
+        lane = Math.random() > 0.5 ? 0 : 1 // Random lane
+        game.lastBarricadeSpawn = 0
+      }
+      // Potholes - increase with level
+      else if (level >= 3 && random < 0.5 && game.lastPotholeSpawn > (150 - level * 20) + Math.random() * 200) {
         type = "pothole"
-        size = 0.6 + Math.random() * 0.8 // Varied sizes from small to large
+        size = 0.6 + Math.random() * 0.8
         game.lastPotholeSpawn = 0
-      } 
-      // Traffic cones
-      else if (random < 0.6) {
-        type = "traffic"
-      } else {
-        return // Skip spawning sometimes for less monotony
+      }
+      else {
+        return // Skip spawning for natural feel
       }
       
       game.obstacles.push({
@@ -349,6 +394,7 @@ export default function Game() {
         y: GROUND_Y,
         type: type,
         size: size,
+        lane: lane,
       })
     }
 
@@ -357,14 +403,13 @@ export default function Game() {
       const types: SideVehicle["type"][] = ["car", "car", "car", "bus", "truck"] // More cars
       const type = types[Math.floor(Math.random() * types.length)]
       const carColors = ["#DC143C", "#4169E1", "#FFD700", "#32CD32", "#FF6347", "#9400D3", "#1E90FF", "#FF4500"]
-      const busColors = ["#B22222", "#228B22", "#FF8C00"]
       const truckColors = ["#4682B4", "#8B4513", "#2F4F4F"]
       
       let color: string
       if (type === "car") {
         color = carColors[Math.floor(Math.random() * carColors.length)]
       } else if (type === "bus") {
-        color = busColors[Math.floor(Math.random() * busColors.length)]
+        color = "#B22222" // Always red BEST bus
       } else {
         color = truckColors[Math.floor(Math.random() * truckColors.length)]
       }
@@ -1038,24 +1083,104 @@ export default function Game() {
       ctx.restore()
     }
 
-    // Draw building
+    // Draw building based on current landmark
     const drawBuilding = (building: Building, isFar: boolean) => {
       const groundBase = GROUND_Y - FOOTPATH_HEIGHT
       const alpha = isFar ? 0.6 : 1
+      const landmark = game.currentLandmark.type
 
       ctx.globalAlpha = alpha
 
+      // Building colors and style based on landmark
+      let buildingColor = building.color
+      let windowColor = game.isRaining ? "rgba(255, 255, 150, 0.8)" : "rgba(255, 255, 200, 0.5)"
+      
+      switch (landmark) {
+        case "school":
+          buildingColor = "#FFF8DC" // Cream color for school
+          windowColor = "rgba(135, 206, 250, 0.8)"
+          break
+        case "hospital":
+          buildingColor = "#F0F8FF" // Light blue for hospital
+          windowColor = "rgba(255, 255, 255, 0.9)"
+          break
+        case "garden":
+          buildingColor = "#90EE90" // Light green for garden area
+          break
+        case "market":
+          buildingColor = "#DEB887" // Tan for market
+          windowColor = "rgba(255, 200, 100, 0.8)"
+          break
+      }
+
       // Building body
-      ctx.fillStyle = building.color
+      ctx.fillStyle = isFar ? building.color : buildingColor
       ctx.fillRect(building.x, groundBase - building.height, building.width, building.height)
 
       // Windows
-      ctx.fillStyle = game.isRaining ? "rgba(255, 255, 150, 0.8)" : "rgba(255, 255, 200, 0.5)"
+      ctx.fillStyle = windowColor
       building.windows.forEach((win) => {
         if (building.x + win.x > 0 && building.x + win.x < canvas.width) {
           ctx.fillRect(building.x + win.x, groundBase - building.height + win.y, 12, 15)
         }
       })
+
+      // Landmark-specific decorations
+      if (!isFar) {
+        switch (landmark) {
+          case "school":
+            // School sign
+            ctx.fillStyle = "#8B4513"
+            ctx.fillRect(building.x + 10, groundBase - building.height - 15, 40, 12)
+            ctx.fillStyle = "#FFF"
+            ctx.font = "8px Arial"
+            ctx.fillText("SCHOOL", building.x + 14, groundBase - building.height - 6)
+            // Flag
+            ctx.fillStyle = "#FF9933"
+            ctx.fillRect(building.x + building.width - 15, groundBase - building.height - 30, 2, 30)
+            ctx.fillStyle = "#138808"
+            ctx.fillRect(building.x + building.width - 13, groundBase - building.height - 28, 12, 8)
+            break
+          case "hospital":
+            // Red cross
+            ctx.fillStyle = "#FF0000"
+            ctx.fillRect(building.x + building.width/2 - 15, groundBase - building.height + 10, 30, 10)
+            ctx.fillRect(building.x + building.width/2 - 5, groundBase - building.height, 10, 30)
+            // Ambulance indicator
+            ctx.fillStyle = "#FFF"
+            ctx.font = "bold 10px Arial"
+            ctx.fillText("HOSPITAL", building.x + 5, groundBase - 10)
+            break
+          case "garden":
+            // Trees
+            for (let i = 0; i < 3; i++) {
+              const treeX = building.x + 15 + i * 25
+              ctx.fillStyle = "#8B4513"
+              ctx.fillRect(treeX, groundBase - 40, 8, 40)
+              ctx.fillStyle = "#228B22"
+              ctx.beginPath()
+              ctx.arc(treeX + 4, groundBase - 55, 20, 0, Math.PI * 2)
+              ctx.fill()
+            }
+            // Flowers
+            ctx.fillStyle = "#FF69B4"
+            for (let i = 0; i < 5; i++) {
+              ctx.beginPath()
+              ctx.arc(building.x + 10 + i * 15, groundBase - 5, 4, 0, Math.PI * 2)
+              ctx.fill()
+            }
+            break
+          case "market":
+            // Awning
+            ctx.fillStyle = "#FF6347"
+            ctx.fillRect(building.x, groundBase - building.height, building.width, 15)
+            // Market sign
+            ctx.fillStyle = "#FFD700"
+            ctx.font = "bold 10px Arial"
+            ctx.fillText("BAZAAR", building.x + 10, groundBase - building.height + 12)
+            break
+        }
+      }
 
       // Building top details for skyscrapers
       if (building.isSkyscraper) {
@@ -1068,6 +1193,85 @@ export default function Game() {
       }
 
       ctx.globalAlpha = 1
+    }
+    
+    // Draw traffic signal
+    const drawTrafficSignal = () => {
+      const signalX = 80
+      const signalY = GROUND_Y - 120
+      
+      // Pole
+      ctx.fillStyle = "#333"
+      ctx.fillRect(signalX - 5, signalY, 10, 120)
+      
+      // Signal box
+      ctx.fillStyle = "#222"
+      ctx.fillRect(signalX - 20, signalY - 80, 40, 80)
+      ctx.strokeStyle = "#444"
+      ctx.lineWidth = 2
+      ctx.strokeRect(signalX - 20, signalY - 80, 40, 80)
+      
+      // Red light
+      ctx.fillStyle = game.trafficSignal === "red" ? "#FF0000" : "#440000"
+      ctx.beginPath()
+      ctx.arc(signalX, signalY - 60, 12, 0, Math.PI * 2)
+      ctx.fill()
+      if (game.trafficSignal === "red") {
+        ctx.shadowColor = "#FF0000"
+        ctx.shadowBlur = 15
+        ctx.fill()
+        ctx.shadowBlur = 0
+      }
+      
+      // Yellow light
+      ctx.fillStyle = game.trafficSignal === "yellow" ? "#FFFF00" : "#444400"
+      ctx.beginPath()
+      ctx.arc(signalX, signalY - 35, 12, 0, Math.PI * 2)
+      ctx.fill()
+      if (game.trafficSignal === "yellow") {
+        ctx.shadowColor = "#FFFF00"
+        ctx.shadowBlur = 15
+        ctx.fill()
+        ctx.shadowBlur = 0
+      }
+      
+      // Green light
+      ctx.fillStyle = game.trafficSignal === "green" ? "#00FF00" : "#004400"
+      ctx.beginPath()
+      ctx.arc(signalX, signalY - 10, 12, 0, Math.PI * 2)
+      ctx.fill()
+      if (game.trafficSignal === "green") {
+        ctx.shadowColor = "#00FF00"
+        ctx.shadowBlur = 15
+        ctx.fill()
+        ctx.shadowBlur = 0
+      }
+    }
+    
+    // Draw notification
+    const drawNotifications = () => {
+      game.notifications = game.notifications.filter(n => n.timer > 0)
+      
+      game.notifications.forEach((notif, index) => {
+        notif.timer--
+        const alpha = Math.min(1, notif.timer / 60)
+        const yOffset = index * 30
+        
+        ctx.fillStyle = `rgba(0, 0, 0, ${alpha * 0.7})`
+        ctx.fillRect(canvas.width / 2 - 150, 70 + yOffset, 300, 25)
+        ctx.fillStyle = notif.color
+        ctx.globalAlpha = alpha
+        ctx.font = "bold 14px Arial"
+        ctx.textAlign = "center"
+        ctx.fillText(notif.text, canvas.width / 2, 88 + yOffset)
+        ctx.textAlign = "left"
+        ctx.globalAlpha = 1
+      })
+    }
+    
+    // Add notification helper
+    const addNotification = (text: string, color: string = "#FFF") => {
+      game.notifications.push({ text, timer: 180, color })
     }
 
     // Draw obstacle
@@ -1152,20 +1356,45 @@ export default function Game() {
           ctx.stroke()
           break
 
-        case "traffic":
-          // Traffic cone
+        case "barricade":
+          // Lane-specific road barricade
+          const barricadeLane = obstacle.lane ?? 0
+          const barricadeYOffset = barricadeLane * 25
+          
+          ctx.save()
+          ctx.translate(0, barricadeYOffset)
+          
+          // Barricade stand posts
+          ctx.fillStyle = "#333"
+          ctx.fillRect(-30, -5, 8, 20)
+          ctx.fillRect(22, -5, 8, 20)
+          
+          // Main barricade bar
           ctx.fillStyle = "#FF6600"
-          ctx.beginPath()
-          ctx.moveTo(-12, 0)
-          ctx.lineTo(-5, -35)
-          ctx.lineTo(5, -35)
-          ctx.lineTo(12, 0)
-          ctx.closePath()
-          ctx.fill()
-          // White stripes
+          ctx.fillRect(-35, -25, 70, 12)
+          
+          // Reflective stripes
           ctx.fillStyle = "#FFF"
-          ctx.fillRect(-9, -12, 18, 5)
-          ctx.fillRect(-7, -25, 14, 5)
+          for (let i = 0; i < 5; i++) {
+            ctx.fillRect(-30 + i * 14, -23, 8, 8)
+          }
+          
+          // Warning text
+          ctx.fillStyle = "#000"
+          ctx.font = "bold 8px Arial"
+          ctx.fillText("ROAD WORK", -28, -16)
+          
+          // Flashing light on top
+          if (Math.sin(game.autoFrame * 0.2) > 0) {
+            ctx.fillStyle = "#FFFF00"
+          } else {
+            ctx.fillStyle = "#FF6600"
+          }
+          ctx.beginPath()
+          ctx.arc(0, -30, 6, 0, Math.PI * 2)
+          ctx.fill()
+          
+          ctx.restore()
           break
       }
 
@@ -1182,8 +1411,24 @@ export default function Game() {
         return
       }
 
+      // Traffic signal logic at game start
+      if (!game.gameStarted) {
+        game.signalTimer++
+        if (game.signalTimer < 60) {
+          game.trafficSignal = "red"
+        } else if (game.signalTimer < 90) {
+          game.trafficSignal = "yellow"
+        } else {
+          game.trafficSignal = "green"
+          game.gameStarted = true
+          addNotification("GO! Navigate the streets of Mumbai!", "#00FF00")
+        }
+      }
+
       // Handle braking - smoothly adjust speed
-      if (game.isBraking) {
+      if (!game.gameStarted) {
+        game.speed = 0
+      } else if (game.isBraking) {
         game.speed = Math.max(2, game.speed - 0.3) // Slow down but not stop
       } else {
         game.speed = Math.min(game.baseSpeed, game.speed + 0.2) // Return to base speed
@@ -1485,6 +1730,7 @@ export default function Game() {
       for (const obstacle of game.obstacles) {
         let obstacleHitbox = { x: 0, y: 0, width: 0, height: 0 }
         const obstacleSize = obstacle.size || 1
+        let shouldCheck = true
 
         switch (obstacle.type) {
           case "pothole":
@@ -1494,16 +1740,29 @@ export default function Game() {
           case "cow":
             obstacleHitbox = { x: obstacle.x - 30, y: obstacle.y - 40, width: 60, height: 40 }
             break
-          case "traffic":
-            obstacleHitbox = { x: obstacle.x - 10, y: obstacle.y - 35, width: 20, height: 35 }
+          case "barricade":
+            // Only check collision if in the same lane as the barricade
+            const barricadeLane = obstacle.lane ?? 0
+            if (game.currentLane !== barricadeLane) {
+              shouldCheck = false
+            } else {
+              const barricadeYOffset = barricadeLane * 25
+              obstacleHitbox = { 
+                x: obstacle.x - 35, 
+                y: obstacle.y - 25 + barricadeYOffset, 
+                width: 70, 
+                height: 30 
+              }
+            }
             break
         }
 
-        if (
+        if (shouldCheck &&
           autoHitbox.x < obstacleHitbox.x + obstacleHitbox.width &&
           autoHitbox.x + autoHitbox.width > obstacleHitbox.x &&
           autoHitbox.y < obstacleHitbox.y + obstacleHitbox.height &&
-          autoHitbox.y + autoHitbox.height > obstacleHitbox.y
+          autoHitbox.y + autoHitbox.height > obstacleHitbox.y &&
+          !game.isJumping
         ) {
           setGameState("gameover")
           if (game.score > highScore) {
@@ -1513,14 +1772,50 @@ export default function Game() {
       }
 
       // Update score
-      game.score++
-      setScore(game.score)
+      if (game.gameStarted) {
+        game.score++
+        setScore(game.score)
+      }
+
+      // Level progression and landmarks
+      const prevLevel = game.currentLevel
+      game.currentLevel = Math.floor(game.score / 500) + 1
+      
+      // Level up notifications and landmark changes
+      if (game.currentLevel > prevLevel && game.currentLevel > 1) {
+        const landmarks: Landmark["type"][] = ["residential", "school", "hospital", "garden", "market"]
+        const newLandmark = landmarks[game.currentLevel % landmarks.length]
+        game.currentLandmark = { type: newLandmark, startScore: game.score }
+        
+        switch (game.currentLevel) {
+          case 2:
+            addNotification("Entering School Zone - Watch for cattle!", "#FFD700")
+            break
+          case 3:
+            addNotification("Hospital Area - Traffic thickens!", "#FF6347")
+            break
+          case 4:
+            addNotification("Garden District - Potholes ahead!", "#90EE90")
+            break
+          case 5:
+            addNotification("Market Area - EXTREME TRAFFIC!", "#FF0000")
+            break
+          default:
+            addNotification(`Level ${game.currentLevel} - Traffic intensifies!`, "#FFA500")
+        }
+      }
 
       // Increase difficulty - update base speed
       game.baseSpeed = 5 + Math.floor(game.score / 500) * 0.5
-      if (!game.isBraking) {
+      if (!game.isBraking && game.gameStarted) {
         game.speed = game.baseSpeed
       }
+
+      // Draw traffic signal
+      drawTrafficSignal()
+      
+      // Draw notifications
+      drawNotifications()
 
       // Brake indicator
       if (game.isBraking) {
@@ -1590,11 +1885,13 @@ export default function Game() {
         {gameState === "start" && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 rounded-lg">
             <div className="text-white text-center">
-              <h2 className="text-3xl font-bold mb-4">🛺 Ready to Roll!</h2>
-              <p className="text-lg mb-2">Navigate through the busy streets</p>
-              <p className="text-sm mb-4 text-amber-300">Watch out for potholes, cows, cars, buses, and water clogging!</p>
-              <p className="text-xs text-amber-200">Down Arrow = Switch Lane | Left Arrow = Brake | Space = Jump</p>
-              <p className="text-xl animate-pulse">Tap or Press Space to Start</p>
+              <h2 className="text-3xl font-bold mb-4">Ready to Roll!</h2>
+              <p className="text-lg mb-2">Navigate through the busy streets of Mumbai</p>
+              <p className="text-sm mb-2 text-amber-300">Watch the traffic signal - GREEN means GO!</p>
+              <p className="text-xs mb-2 text-amber-200">Avoid: Barricades, Cows, Potholes, Cars, Buses, Water</p>
+              <p className="text-xs mb-4 text-green-300">Switch lanes to dodge lane-specific barricades!</p>
+              <p className="text-xs text-amber-200">Down = Switch Lane | Left = Brake | Space = Jump</p>
+              <p className="text-xl animate-pulse mt-4">Tap or Press Space to Start</p>
             </div>
           </div>
         )}
