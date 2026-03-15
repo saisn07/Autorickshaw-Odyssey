@@ -31,9 +31,22 @@ interface Raindrop {
 interface Obstacle {
   x: number
   y: number
-  type: "pothole" | "cow" | "barricade"
+  type: "pothole" | "cow" | "barricade" | "schoolvan" | "zebracrossing"
   size?: number // For varied pothole sizes
   lane?: number // For lane-specific obstacles like barricades
+}
+
+interface BusStop {
+  x: number
+  peopleCount: number
+  busArriving: boolean
+}
+
+interface ZebraCrossing {
+  x: number
+  signalState: "red" | "green"
+  signalTimer: number
+  hasPassed: boolean
 }
 
 interface SideVehicle {
@@ -93,20 +106,28 @@ export default function Game() {
     vendors: [] as Vendor[],
     waterClogs: [] as WaterClog[],
     sideVehicles: [] as SideVehicle[],
+    busStops: [] as BusStop[],
+    zebraCrossings: [] as ZebraCrossing[],
     groundOffset: 0,
     speed: 5,
     baseSpeed: 5,
     isBraking: false,
     score: 0,
+    // Weather system - progressive transition
+    weatherState: "sunny" as "sunny" | "cloudy" | "darkening" | "drizzle" | "raining",
+    cloudDarkness: 0, // 0-1 for gradual darkening
     isRaining: false,
     rainTimer: 0,
     rainDuration: 0,
-    nextRainTime: 180,
+    nextRainTime: 400, // Later rain start
+    rainWarningGiven: false,
     lastDogSpawn: 0,
     lastCowSpawn: 0,
     lastPotholeSpawn: 0,
     lastVehicleSpawn: 0,
     lastBarricadeSpawn: 0,
+    lastBusStopSpawn: 0,
+    lastZebraCrossingSpawn: 0,
     currentLane: 0, // 0 = top, 1 = bottom
     waterClogTimer: 0,
     autoFrame: 0,
@@ -121,6 +142,8 @@ export default function Game() {
     currentLevel: 1,
     currentLandmark: { type: "residential", startScore: 0 } as Landmark,
     nextLandmarkScore: 500,
+    // Time of day for visual ambiance
+    timeOfDay: 0, // 0 = morning, increases over time
   })
 
   const jump = useCallback(() => {
@@ -144,21 +167,30 @@ export default function Game() {
     game.vendors = []
     game.waterClogs = []
     game.sideVehicles = []
+    game.busStops = []
+    game.zebraCrossings = []
     game.groundOffset = 0
     game.speed = 0 // Start at 0, will accelerate after green light
     game.baseSpeed = 5
     game.isBraking = false
     game.score = 0
+    // Weather reset - start sunny morning
+    game.weatherState = "sunny"
+    game.cloudDarkness = 0
     game.isRaining = false
     game.rainTimer = 0
-    game.nextRainTime = Math.random() * 300 + 200
+    game.nextRainTime = 500 + Math.random() * 200 // Rain comes later
+    game.rainWarningGiven = false
     game.lastDogSpawn = 0
     game.lastCowSpawn = 0
     game.lastPotholeSpawn = 0
     game.lastVehicleSpawn = 0
     game.lastBarricadeSpawn = 0
+    game.lastBusStopSpawn = 0
+    game.lastZebraCrossingSpawn = 0
     game.currentLane = 0
     game.waterClogTimer = 0
+    game.timeOfDay = 0
     // Traffic signal reset
     game.trafficSignal = "red"
     game.signalTimer = 0
@@ -1195,6 +1227,237 @@ export default function Game() {
       ctx.globalAlpha = 1
     }
     
+    // Draw bus stop on footpath
+    const drawBusStop = (busStop: BusStop) => {
+      ctx.save()
+      ctx.translate(busStop.x, GROUND_Y - FOOTPATH_HEIGHT)
+      
+      // Bus stop pole
+      ctx.fillStyle = "#333"
+      ctx.fillRect(-3, -80, 6, 80)
+      
+      // Bus stop sign
+      ctx.fillStyle = "#1E90FF"
+      ctx.fillRect(-25, -90, 50, 25)
+      ctx.fillStyle = "#FFF"
+      ctx.font = "bold 10px Arial"
+      ctx.fillText("BUS STOP", -20, -73)
+      
+      // Bus route number
+      ctx.fillStyle = "#FFD700"
+      ctx.fillRect(-20, -65, 15, 12)
+      ctx.fillStyle = "#000"
+      ctx.font = "8px Arial"
+      ctx.fillText("101", -18, -56)
+      
+      // Shelter roof
+      ctx.fillStyle = "#4682B4"
+      ctx.fillRect(-40, -60, 80, 8)
+      
+      // Shelter posts
+      ctx.fillStyle = "#666"
+      ctx.fillRect(-38, -52, 4, 52)
+      ctx.fillRect(34, -52, 4, 52)
+      
+      // Bench
+      ctx.fillStyle = "#8B4513"
+      ctx.fillRect(-30, -15, 60, 5)
+      ctx.fillRect(-28, -10, 4, 10)
+      ctx.fillRect(24, -10, 4, 10)
+      
+      // People waiting (animated)
+      const peopleColors = ["#FF6347", "#4169E1", "#32CD32", "#FFD700", "#9932CC"]
+      for (let i = 0; i < busStop.peopleCount; i++) {
+        const pX = -25 + i * 15
+        const bobble = Math.sin(game.autoFrame * 0.1 + i) * 2
+        
+        // Person body
+        ctx.fillStyle = peopleColors[i % peopleColors.length]
+        ctx.fillRect(pX - 4, -35 + bobble, 8, 20)
+        
+        // Head
+        ctx.fillStyle = "#F5DEB3"
+        ctx.beginPath()
+        ctx.arc(pX, -42 + bobble, 6, 0, Math.PI * 2)
+        ctx.fill()
+        
+        // Bag/briefcase for some
+        if (i % 2 === 0) {
+          ctx.fillStyle = "#8B4513"
+          ctx.fillRect(pX + 5, -28 + bobble, 6, 10)
+        }
+      }
+      
+      ctx.restore()
+    }
+    
+    // Draw zebra crossing with signal
+    const drawZebraCrossing = (crossing: ZebraCrossing) => {
+      ctx.save()
+      ctx.translate(crossing.x, 0)
+      
+      // Zebra stripes on road
+      ctx.fillStyle = "#FFF"
+      for (let i = 0; i < 8; i++) {
+        ctx.fillRect(-40 + i * 10, GROUND_Y, 6, 80)
+      }
+      
+      // Crossing signal pole
+      ctx.fillStyle = "#333"
+      ctx.fillRect(-50, GROUND_Y - 100, 6, 100)
+      ctx.fillRect(44, GROUND_Y - 100, 6, 100)
+      
+      // Signal boxes
+      const drawSignalBox = (signalX: number) => {
+        ctx.fillStyle = "#222"
+        ctx.fillRect(signalX - 12, GROUND_Y - 95, 24, 40)
+        
+        // Red man / Green man
+        if (crossing.signalState === "red") {
+          ctx.fillStyle = "#FF0000"
+          ctx.beginPath()
+          ctx.arc(signalX, GROUND_Y - 82, 8, 0, Math.PI * 2)
+          ctx.fill()
+          // Standing figure
+          ctx.fillRect(signalX - 2, GROUND_Y - 74, 4, 12)
+          ctx.fillRect(signalX - 6, GROUND_Y - 62, 12, 3)
+        } else {
+          ctx.fillStyle = "#00FF00"
+          ctx.beginPath()
+          ctx.arc(signalX, GROUND_Y - 82, 8, 0, Math.PI * 2)
+          ctx.fill()
+          // Walking figure
+          ctx.fillRect(signalX - 2, GROUND_Y - 74, 4, 10)
+          // Legs apart (walking)
+          ctx.beginPath()
+          ctx.moveTo(signalX - 2, GROUND_Y - 64)
+          ctx.lineTo(signalX - 6, GROUND_Y - 58)
+          ctx.lineTo(signalX, GROUND_Y - 64)
+          ctx.lineTo(signalX + 6, GROUND_Y - 58)
+          ctx.lineWidth = 2
+          ctx.strokeStyle = "#00FF00"
+          ctx.stroke()
+        }
+      }
+      
+      drawSignalBox(-47)
+      drawSignalBox(47)
+      
+      // "STOP" warning when signal is red
+      if (crossing.signalState === "red" && !crossing.hasPassed) {
+        ctx.fillStyle = "rgba(255, 0, 0, 0.3)"
+        ctx.fillRect(-45, GROUND_Y, 90, 80)
+        
+        ctx.fillStyle = "#FF0000"
+        ctx.font = "bold 16px Arial"
+        ctx.fillText("BRAKE!", -25, GROUND_Y + 45)
+      }
+      
+      ctx.restore()
+    }
+    
+    // Draw school crossing sign
+    const drawSchoolCrossingSign = (x: number) => {
+      ctx.save()
+      ctx.translate(x, GROUND_Y - FOOTPATH_HEIGHT)
+      
+      // Pole
+      ctx.fillStyle = "#666"
+      ctx.fillRect(-3, -100, 6, 100)
+      
+      // Yellow diamond sign
+      ctx.fillStyle = "#FFD700"
+      ctx.save()
+      ctx.translate(0, -115)
+      ctx.rotate(Math.PI / 4)
+      ctx.fillRect(-20, -20, 40, 40)
+      ctx.restore()
+      
+      // Border
+      ctx.strokeStyle = "#000"
+      ctx.lineWidth = 2
+      ctx.save()
+      ctx.translate(0, -115)
+      ctx.rotate(Math.PI / 4)
+      ctx.strokeRect(-20, -20, 40, 40)
+      ctx.restore()
+      
+      // Children crossing icon
+      ctx.fillStyle = "#000"
+      // Two figures
+      ctx.beginPath()
+      ctx.arc(-8, -120, 4, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.fillRect(-10, -116, 4, 8)
+      
+      ctx.beginPath()
+      ctx.arc(5, -118, 4, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.fillRect(3, -114, 4, 8)
+      
+      // "SCHOOL" text below
+      ctx.fillStyle = "#000"
+      ctx.font = "bold 8px Arial"
+      ctx.fillText("SCHOOL", -18, -85)
+      ctx.fillText("CROSSING", -22, -75)
+      
+      ctx.restore()
+    }
+    
+    // Draw school van (parked obstacle)
+    const drawSchoolVan = (x: number, y: number, lane: number) => {
+      ctx.save()
+      const laneOffset = lane * 25
+      ctx.translate(x, y + laneOffset)
+      
+      // Van body - yellow school van
+      ctx.fillStyle = "#FFD700"
+      ctx.fillRect(-35, -35, 70, 35)
+      
+      // Roof
+      ctx.fillStyle = "#FFA500"
+      ctx.fillRect(-30, -45, 60, 12)
+      
+      // Windows
+      ctx.fillStyle = "rgba(135, 206, 250, 0.8)"
+      ctx.fillRect(-28, -42, 15, 10)
+      ctx.fillRect(-8, -42, 15, 10)
+      ctx.fillRect(12, -42, 15, 10)
+      
+      // "SCHOOL" text
+      ctx.fillStyle = "#000"
+      ctx.font = "bold 10px Arial"
+      ctx.fillText("SCHOOL", -22, -20)
+      
+      // Door
+      ctx.fillStyle = "#333"
+      ctx.fillRect(20, -30, 12, 25)
+      
+      // Wheels
+      ctx.fillStyle = "#1a1a1a"
+      ctx.beginPath()
+      ctx.arc(-20, 5, 8, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(20, 5, 8, 0, Math.PI * 2)
+      ctx.fill()
+      
+      // Warning lights (flashing)
+      if (Math.sin(game.autoFrame * 0.2) > 0) {
+        ctx.fillStyle = "#FF0000"
+      } else {
+        ctx.fillStyle = "#880000"
+      }
+      ctx.beginPath()
+      ctx.arc(-30, -40, 4, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(30, -40, 4, 0, Math.PI * 2)
+      ctx.fill()
+      
+      ctx.restore()
+    }
+
     // Draw traffic signal
     const drawTrafficSignal = () => {
       const signalX = 80
@@ -1434,32 +1697,117 @@ export default function Game() {
         game.speed = Math.min(game.baseSpeed, game.speed + 0.2) // Return to base speed
       }
 
-      // Clear canvas
+      // Time of day progression (affects lighting)
+      game.timeOfDay += 0.001
+      
+      // Weather state machine with gradual transitions
+      game.rainTimer++
+      
+      // Weather progression: sunny -> cloudy -> darkening -> drizzle -> raining
+      if (game.weatherState === "sunny" && game.rainTimer >= game.nextRainTime - 200) {
+        game.weatherState = "cloudy"
+        addNotification("Clouds gathering...", "#A9A9A9")
+      }
+      else if (game.weatherState === "cloudy" && game.rainTimer >= game.nextRainTime - 100) {
+        game.weatherState = "darkening"
+        game.cloudDarkness = Math.min(1, game.cloudDarkness + 0.02)
+        if (!game.rainWarningGiven) {
+          addNotification("Rain approaching! Watch for water clogging!", "#4682B4")
+          game.rainWarningGiven = true
+        }
+      }
+      else if (game.weatherState === "darkening" && game.rainTimer >= game.nextRainTime - 50) {
+        game.weatherState = "drizzle"
+        addNotification("Drizzle starting...", "#6495ED")
+      }
+      else if (game.weatherState === "drizzle" && game.rainTimer >= game.nextRainTime) {
+        game.weatherState = "raining"
+        game.isRaining = true
+        game.rainDuration = Math.random() * 400 + 600
+        game.rainTimer = 0
+        addNotification("MONSOON! Roads may be flooded!", "#1E90FF")
+      }
+      else if (game.isRaining && game.rainTimer >= game.rainDuration) {
+        game.weatherState = "sunny"
+        game.isRaining = false
+        game.cloudDarkness = 0
+        game.rainTimer = 0
+        game.nextRainTime = 600 + Math.random() * 300
+        game.rainWarningGiven = false
+        game.raindrops = []
+        addNotification("Skies clearing up!", "#87CEEB")
+      }
+      
+      // Gradual cloud darkness during darkening phase
+      if (game.weatherState === "darkening") {
+        game.cloudDarkness = Math.min(0.7, game.cloudDarkness + 0.005)
+      }
+
+      // Clear canvas with weather-appropriate sky
       const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height)
-      if (game.isRaining) {
+      const morningTint = Math.min(0.3, game.timeOfDay * 0.1)
+      
+      if (game.weatherState === "raining" || game.weatherState === "drizzle") {
         gradient.addColorStop(0, "#2c3e50")
         gradient.addColorStop(0.5, "#4a6572")
         gradient.addColorStop(1, "#5d7a8c")
+      } else if (game.weatherState === "darkening") {
+        const dark = game.cloudDarkness
+        gradient.addColorStop(0, `rgb(${135 - dark * 80}, ${206 - dark * 100}, ${235 - dark * 100})`)
+        gradient.addColorStop(0.5, `rgb(${176 - dark * 90}, ${224 - dark * 110}, ${230 - dark * 100})`)
+        gradient.addColorStop(1, `rgb(${224 - dark * 100}, ${246 - dark * 120}, ${255 - dark * 100})`)
+      } else if (game.weatherState === "cloudy") {
+        gradient.addColorStop(0, "#9FB8C7")
+        gradient.addColorStop(0.5, "#B8C9D4")
+        gradient.addColorStop(1, "#D4E1E8")
       } else {
-        gradient.addColorStop(0, "#87CEEB")
-        gradient.addColorStop(0.5, "#B0E0E6")
-        gradient.addColorStop(1, "#E0F6FF")
+        // Sunny morning - warm golden tones
+        gradient.addColorStop(0, `rgb(${135 + morningTint * 50}, ${206}, ${235})`)
+        gradient.addColorStop(0.5, `rgb(${255 - morningTint * 30}, ${240 - morningTint * 20}, ${220})`)
+        gradient.addColorStop(1, `rgb(${255}, ${250 - morningTint * 30}, ${230 - morningTint * 40})`)
       }
       ctx.fillStyle = gradient
       ctx.fillRect(0, 0, canvas.width, canvas.height)
-
-      // Rain logic - longer rain periods
-      game.rainTimer++
-      if (!game.isRaining && game.rainTimer >= game.nextRainTime) {
-        game.isRaining = true
-        // Rain lasts much longer now (8-15 seconds at 60fps)
-        game.rainDuration = Math.random() * 400 + 500
-        game.rainTimer = 0
-      } else if (game.isRaining && game.rainTimer >= game.rainDuration) {
-        game.isRaining = false
-        game.rainTimer = 0
-        game.nextRainTime = Math.random() * 300 + 250
-        game.raindrops = []
+      
+      // Draw sun on sunny/cloudy days
+      if (game.weatherState === "sunny" || game.weatherState === "cloudy") {
+        ctx.fillStyle = game.weatherState === "sunny" ? "#FFD700" : "#F0E68C"
+        ctx.beginPath()
+        ctx.arc(650, 60, 35, 0, Math.PI * 2)
+        ctx.fill()
+        
+        // Sun rays on sunny day
+        if (game.weatherState === "sunny") {
+          ctx.strokeStyle = "rgba(255, 215, 0, 0.3)"
+          ctx.lineWidth = 3
+          for (let i = 0; i < 8; i++) {
+            const angle = (i / 8) * Math.PI * 2 + game.timeOfDay
+            ctx.beginPath()
+            ctx.moveTo(650 + Math.cos(angle) * 40, 60 + Math.sin(angle) * 40)
+            ctx.lineTo(650 + Math.cos(angle) * 60, 60 + Math.sin(angle) * 60)
+            ctx.stroke()
+          }
+        }
+      }
+      
+      // Draw clouds
+      if (game.weatherState !== "sunny") {
+        const cloudAlpha = game.weatherState === "cloudy" ? 0.6 : 
+                          game.weatherState === "darkening" ? 0.8 : 0.9
+        ctx.fillStyle = `rgba(150, 150, 150, ${cloudAlpha})`
+        
+        // Multiple clouds
+        for (let i = 0; i < 5; i++) {
+          const cloudX = (i * 180 + game.groundOffset * 0.2) % (canvas.width + 100) - 50
+          const cloudY = 30 + (i % 3) * 20
+          
+          ctx.beginPath()
+          ctx.arc(cloudX, cloudY, 25, 0, Math.PI * 2)
+          ctx.arc(cloudX + 25, cloudY - 10, 30, 0, Math.PI * 2)
+          ctx.arc(cloudX + 50, cloudY, 25, 0, Math.PI * 2)
+          ctx.arc(cloudX + 25, cloudY + 5, 20, 0, Math.PI * 2)
+          ctx.fill()
+        }
       }
 
       // Spawn raindrops
