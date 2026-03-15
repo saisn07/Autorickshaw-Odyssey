@@ -32,6 +32,18 @@ interface Obstacle {
   x: number
   y: number
   type: "pothole" | "cow" | "traffic"
+  size?: number // For varied pothole sizes
+}
+
+interface SideVehicle {
+  x: number
+  y: number
+  type: "car" | "bus" | "truck"
+  color: string
+  speed: number
+  lane: number
+  honking: boolean
+  honkTimer: number
 }
 
 interface WaterClog {
@@ -68,8 +80,11 @@ export default function Game() {
     obstacles: [] as Obstacle[],
     vendors: [] as Vendor[],
     waterClogs: [] as WaterClog[],
+    sideVehicles: [] as SideVehicle[],
     groundOffset: 0,
     speed: 5,
+    baseSpeed: 5,
+    isBraking: false,
     score: 0,
     isRaining: false,
     rainTimer: 0,
@@ -77,6 +92,8 @@ export default function Game() {
     nextRainTime: 180,
     lastDogSpawn: 0,
     lastCowSpawn: 0,
+    lastPotholeSpawn: 0,
+    lastVehicleSpawn: 0,
     currentLane: 0, // 0 = top, 1 = bottom
     waterClogTimer: 0,
     autoFrame: 0,
@@ -103,14 +120,19 @@ export default function Game() {
     game.obstacles = []
     game.vendors = []
     game.waterClogs = []
+    game.sideVehicles = []
     game.groundOffset = 0
     game.speed = 5
+    game.baseSpeed = 5
+    game.isBraking = false
     game.score = 0
     game.isRaining = false
     game.rainTimer = 0
     game.nextRainTime = Math.random() * 300 + 200
     game.lastDogSpawn = 0
     game.lastCowSpawn = 0
+    game.lastPotholeSpawn = 0
+    game.lastVehicleSpawn = 0
     game.currentLane = 0
     game.waterClogTimer = 0
     setScore(0)
@@ -123,6 +145,18 @@ export default function Game() {
       game.currentLane = game.currentLane === 0 ? 1 : 0
     }
   }, [gameState])
+
+  const startBraking = useCallback(() => {
+    const game = gameRef.current
+    if (gameState === "playing") {
+      game.isBraking = true
+    }
+  }, [gameState])
+
+  const stopBraking = useCallback(() => {
+    const game = gameRef.current
+    game.isBraking = false
+  }, [])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -139,30 +173,59 @@ export default function Game() {
         e.preventDefault()
         switchLane()
       }
+      // Arrow Left or B to brake
+      if ((e.code === "ArrowLeft" || e.code === "KeyB") && gameState === "playing") {
+        e.preventDefault()
+        startBraking()
+      }
+    }
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      // Release brake
+      if (e.code === "ArrowLeft" || e.code === "KeyB") {
+        stopBraking()
+      }
     }
 
     const handleTouchStart = (e: TouchEvent) => {
       if (gameState === "start" || gameState === "gameover") {
         startGame()
       } else {
-        // Double tap detection for lane switch
         const touch = e.touches[0]
-        if (touch.clientY > window.innerHeight / 2) {
+        const screenHeight = window.innerHeight
+        const screenWidth = window.innerWidth
+        
+        // Left third of screen = brake
+        if (touch.clientX < screenWidth / 3) {
+          startBraking()
+        }
+        // Bottom half = switch lane
+        else if (touch.clientY > screenHeight / 2) {
           switchLane()
-        } else {
+        }
+        // Top half = jump
+        else {
           jump()
         }
       }
     }
 
+    const handleTouchEnd = () => {
+      stopBraking()
+    }
+
     window.addEventListener("keydown", handleKeyDown)
+    window.addEventListener("keyup", handleKeyUp)
     window.addEventListener("touchstart", handleTouchStart)
+    window.addEventListener("touchend", handleTouchEnd)
 
     return () => {
       window.removeEventListener("keydown", handleKeyDown)
+      window.removeEventListener("keyup", handleKeyUp)
       window.removeEventListener("touchstart", handleTouchStart)
+      window.removeEventListener("touchend", handleTouchEnd)
     }
-  }, [gameState, jump, startGame, switchLane])
+  }, [gameState, jump, startGame, switchLane, startBraking, stopBraking])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -254,28 +317,69 @@ export default function Game() {
       }
     }
 
-    // Spawn obstacle - cows are rarer and more random
+    // Spawn obstacle - more realistic Bombay traffic with varied timing
     const spawnObstacle = () => {
       game.lastCowSpawn++
+      game.lastPotholeSpawn++
       
-      // Weighted random: cows are much rarer
       const random = Math.random()
       let type: "pothole" | "cow" | "traffic"
+      let size = 1
       
-      // Cow only spawns after significant delay and with low probability
-      if (random < 0.1 && game.lastCowSpawn > 400 + Math.random() * 600) {
+      // Cow only spawns rarely with very random timing
+      if (random < 0.08 && game.lastCowSpawn > 500 + Math.random() * 800) {
         type = "cow"
         game.lastCowSpawn = 0
-      } else if (random < 0.5) {
+      } 
+      // Potholes with varied sizes and random intervals
+      else if (random < 0.4 && game.lastPotholeSpawn > 100 + Math.random() * 300) {
         type = "pothole"
-      } else {
+        size = 0.6 + Math.random() * 0.8 // Varied sizes from small to large
+        game.lastPotholeSpawn = 0
+      } 
+      // Traffic cones
+      else if (random < 0.6) {
         type = "traffic"
+      } else {
+        return // Skip spawning sometimes for less monotony
       }
       
       game.obstacles.push({
         x: canvas.width + 50,
         y: GROUND_Y,
         type: type,
+        size: size,
+      })
+    }
+
+    // Spawn side vehicles (cars, buses, trucks from opposite direction)
+    const spawnSideVehicle = () => {
+      const types: SideVehicle["type"][] = ["car", "car", "car", "bus", "truck"] // More cars
+      const type = types[Math.floor(Math.random() * types.length)]
+      const carColors = ["#DC143C", "#4169E1", "#FFD700", "#32CD32", "#FF6347", "#9400D3", "#1E90FF", "#FF4500"]
+      const busColors = ["#B22222", "#228B22", "#FF8C00"]
+      const truckColors = ["#4682B4", "#8B4513", "#2F4F4F"]
+      
+      let color: string
+      if (type === "car") {
+        color = carColors[Math.floor(Math.random() * carColors.length)]
+      } else if (type === "bus") {
+        color = busColors[Math.floor(Math.random() * busColors.length)]
+      } else {
+        color = truckColors[Math.floor(Math.random() * truckColors.length)]
+      }
+      
+      // Spawn from right side, moving left (opposite traffic)
+      const lane = Math.random() > 0.6 ? 1 : 0 // Mostly in opposite lane
+      game.sideVehicles.push({
+        x: canvas.width + 100,
+        y: GROUND_Y + (lane === 0 ? 10 : 45),
+        type: type,
+        color: color,
+        speed: game.speed * (1.5 + Math.random() * 1), // Faster than player
+        lane: lane,
+        honking: Math.random() > 0.7,
+        honkTimer: 0,
       })
     }
 
@@ -726,6 +830,141 @@ export default function Game() {
       ctx.stroke()
     }
 
+    // Draw side vehicle (cars, buses, trucks)
+    const drawSideVehicle = (vehicle: SideVehicle) => {
+      ctx.save()
+      ctx.translate(vehicle.x, vehicle.y)
+      
+      // Flip for opposite direction
+      ctx.scale(-1, 1)
+
+      switch (vehicle.type) {
+        case "car":
+          // Car body
+          ctx.fillStyle = vehicle.color
+          ctx.beginPath()
+          ctx.roundRect(-30, -20, 60, 25, 5)
+          ctx.fill()
+          
+          // Car roof
+          ctx.fillStyle = vehicle.color
+          ctx.beginPath()
+          ctx.roundRect(-15, -32, 30, 15, 3)
+          ctx.fill()
+          
+          // Windows
+          ctx.fillStyle = "rgba(135, 206, 250, 0.8)"
+          ctx.fillRect(-12, -30, 10, 10)
+          ctx.fillRect(2, -30, 10, 10)
+          
+          // Wheels
+          ctx.fillStyle = "#1a1a1a"
+          ctx.beginPath()
+          ctx.arc(-18, 8, 8, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(18, 8, 8, 0, Math.PI * 2)
+          ctx.fill()
+          
+          // Headlights
+          ctx.fillStyle = "#FFFF99"
+          ctx.beginPath()
+          ctx.arc(28, -10, 4, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(28, -5, 3, 0, Math.PI * 2)
+          ctx.fill()
+          break
+
+        case "bus":
+          // Bus body
+          ctx.fillStyle = vehicle.color
+          ctx.fillRect(-50, -35, 100, 40)
+          
+          // Bus stripe
+          ctx.fillStyle = "#FFF"
+          ctx.fillRect(-50, -20, 100, 5)
+          
+          // Windows
+          ctx.fillStyle = "rgba(135, 206, 250, 0.8)"
+          for (let i = 0; i < 5; i++) {
+            ctx.fillRect(-42 + i * 18, -32, 12, 15)
+          }
+          
+          // Door
+          ctx.fillStyle = "#333"
+          ctx.fillRect(35, -32, 12, 30)
+          
+          // Wheels
+          ctx.fillStyle = "#1a1a1a"
+          ctx.beginPath()
+          ctx.arc(-35, 10, 10, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(35, 10, 10, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(10, 10, 10, 0, Math.PI * 2)
+          ctx.fill()
+          
+          // Destination board
+          ctx.fillStyle = "#000"
+          ctx.fillRect(-45, -42, 60, 8)
+          ctx.fillStyle = "#FF6600"
+          ctx.font = "6px Arial"
+          ctx.fillText("MUMBAI", -40, -36)
+          break
+
+        case "truck":
+          // Truck cabin
+          ctx.fillStyle = vehicle.color
+          ctx.fillRect(15, -30, 30, 30)
+          
+          // Truck container
+          ctx.fillStyle = "#696969"
+          ctx.fillRect(-45, -35, 60, 35)
+          
+          // Container details
+          ctx.strokeStyle = "#555"
+          ctx.lineWidth = 2
+          ctx.strokeRect(-45, -35, 60, 35)
+          ctx.beginPath()
+          ctx.moveTo(-15, -35)
+          ctx.lineTo(-15, 0)
+          ctx.stroke()
+          
+          // Cabin window
+          ctx.fillStyle = "rgba(135, 206, 250, 0.8)"
+          ctx.fillRect(20, -25, 20, 12)
+          
+          // Wheels
+          ctx.fillStyle = "#1a1a1a"
+          ctx.beginPath()
+          ctx.arc(-30, 10, 10, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(-10, 10, 10, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(30, 10, 10, 0, Math.PI * 2)
+          ctx.fill()
+          break
+      }
+
+      // Honking indicator
+      if (vehicle.honking) {
+        vehicle.honkTimer++
+        if (Math.sin(vehicle.honkTimer * 0.3) > 0) {
+          ctx.fillStyle = "rgba(255, 255, 0, 0.6)"
+          ctx.font = "bold 12px Arial"
+          ctx.scale(-1, 1) // Flip text back
+          ctx.fillText("HONK!", -30, -40)
+        }
+      }
+
+      ctx.restore()
+    }
+
     // Draw water clogging/puddle
     const drawWaterClog = (clog: WaterClog) => {
       ctx.save()
@@ -835,17 +1074,40 @@ export default function Game() {
     const drawObstacle = (obstacle: Obstacle) => {
       ctx.save()
       ctx.translate(obstacle.x, obstacle.y)
+      
+      const size = obstacle.size || 1
 
       switch (obstacle.type) {
         case "pothole":
+          // Varied pothole sizes with more detail
+          const potholeWidth = 25 * size
+          const potholeHeight = 10 * size
+          
+          // Outer crack/damage ring
+          ctx.fillStyle = "#444"
+          ctx.beginPath()
+          ctx.ellipse(0, 0, potholeWidth + 5, potholeHeight + 3, 0, 0, Math.PI * 2)
+          ctx.fill()
+          
+          // Main pothole
           ctx.fillStyle = "#333"
           ctx.beginPath()
-          ctx.ellipse(0, 0, 25, 10, 0, 0, Math.PI * 2)
+          ctx.ellipse(0, 0, potholeWidth, potholeHeight, 0, 0, Math.PI * 2)
           ctx.fill()
+          
+          // Inner depth
           ctx.fillStyle = "#1a1a1a"
           ctx.beginPath()
-          ctx.ellipse(0, 0, 18, 7, 0, 0, Math.PI * 2)
+          ctx.ellipse(0, 0, potholeWidth * 0.7, potholeHeight * 0.7, 0, 0, Math.PI * 2)
           ctx.fill()
+          
+          // Water in pothole if raining
+          if (game.isRaining) {
+            ctx.fillStyle = "rgba(100, 149, 237, 0.5)"
+            ctx.beginPath()
+            ctx.ellipse(0, 0, potholeWidth * 0.6, potholeHeight * 0.5, 0, 0, Math.PI * 2)
+            ctx.fill()
+          }
           break
 
         case "cow":
@@ -918,6 +1180,13 @@ export default function Game() {
       if (gameState !== "playing") {
         animationId = requestAnimationFrame(gameLoop)
         return
+      }
+
+      // Handle braking - smoothly adjust speed
+      if (game.isBraking) {
+        game.speed = Math.max(2, game.speed - 0.3) // Slow down but not stop
+      } else {
+        game.speed = Math.min(game.baseSpeed, game.speed + 0.2) // Return to base speed
       }
 
       // Clear canvas
@@ -1116,6 +1385,24 @@ export default function Game() {
         return true
       })
 
+      // Spawn side vehicles (cars, buses, trucks) at random intervals
+      game.lastVehicleSpawn++
+      const vehicleSpawnInterval = 200 + Math.random() * 400 // Very random timing
+      if (game.lastVehicleSpawn > vehicleSpawnInterval && game.sideVehicles.length < 3) {
+        if (Math.random() > 0.4) { // 60% chance to spawn
+          spawnSideVehicle()
+          game.lastVehicleSpawn = 0
+        }
+      }
+
+      // Update and draw side vehicles
+      game.sideVehicles = game.sideVehicles.filter((vehicle) => {
+        vehicle.x -= vehicle.speed
+        if (vehicle.x < -100) return false
+        drawSideVehicle(vehicle)
+        return true
+      })
+
       // Auto physics
       if (game.isJumping) {
         game.autoVelocityY += 0.8
@@ -1164,12 +1451,45 @@ export default function Game() {
         }
       }
 
+      // Check side vehicle collisions
+      for (const vehicle of game.sideVehicles) {
+        if (game.currentLane === vehicle.lane) {
+          let vehicleHitbox = { x: 0, y: 0, width: 0, height: 0 }
+          
+          switch (vehicle.type) {
+            case "car":
+              vehicleHitbox = { x: vehicle.x - 30, y: vehicle.y - 25, width: 60, height: 35 }
+              break
+            case "bus":
+              vehicleHitbox = { x: vehicle.x - 50, y: vehicle.y - 40, width: 100, height: 50 }
+              break
+            case "truck":
+              vehicleHitbox = { x: vehicle.x - 45, y: vehicle.y - 35, width: 90, height: 45 }
+              break
+          }
+          
+          if (
+            autoHitbox.x < vehicleHitbox.x + vehicleHitbox.width &&
+            autoHitbox.x + autoHitbox.width > vehicleHitbox.x &&
+            autoHitbox.y < vehicleHitbox.y + vehicleHitbox.height &&
+            autoHitbox.y + autoHitbox.height > vehicleHitbox.y
+          ) {
+            setGameState("gameover")
+            if (game.score > highScore) {
+              setHighScore(game.score)
+            }
+          }
+        }
+      }
+
       for (const obstacle of game.obstacles) {
         let obstacleHitbox = { x: 0, y: 0, width: 0, height: 0 }
+        const obstacleSize = obstacle.size || 1
 
         switch (obstacle.type) {
           case "pothole":
-            obstacleHitbox = { x: obstacle.x - 20, y: obstacle.y - 5, width: 40, height: 10 }
+            const potholeW = 40 * obstacleSize
+            obstacleHitbox = { x: obstacle.x - potholeW/2, y: obstacle.y - 5, width: potholeW, height: 10 }
             break
           case "cow":
             obstacleHitbox = { x: obstacle.x - 30, y: obstacle.y - 40, width: 60, height: 40 }
@@ -1196,8 +1516,27 @@ export default function Game() {
       game.score++
       setScore(game.score)
 
-      // Increase difficulty
-      game.speed = 5 + Math.floor(game.score / 500) * 0.5
+      // Increase difficulty - update base speed
+      game.baseSpeed = 5 + Math.floor(game.score / 500) * 0.5
+      if (!game.isBraking) {
+        game.speed = game.baseSpeed
+      }
+
+      // Brake indicator
+      if (game.isBraking) {
+        ctx.fillStyle = "rgba(255, 0, 0, 0.4)"
+        ctx.fillRect(canvas.width - 100, 10, 90, 25)
+        ctx.fillStyle = "#FFF"
+        ctx.font = "bold 14px Arial"
+        ctx.fillText("BRAKING", canvas.width - 95, 28)
+      }
+
+      // Lane indicator
+      ctx.fillStyle = "rgba(0, 0, 0, 0.3)"
+      ctx.fillRect(canvas.width - 100, 40, 90, 25)
+      ctx.fillStyle = "#FFF"
+      ctx.font = "12px Arial"
+      ctx.fillText(`Lane: ${game.currentLane === 0 ? "TOP" : "BOTTOM"}`, canvas.width - 95, 57)
 
       // Weather indicator
       if (game.isRaining) {
@@ -1253,8 +1592,8 @@ export default function Game() {
             <div className="text-white text-center">
               <h2 className="text-3xl font-bold mb-4">🛺 Ready to Roll!</h2>
               <p className="text-lg mb-2">Navigate through the busy streets</p>
-              <p className="text-sm mb-4 text-amber-300">Watch out for potholes, cows, water clogging, and traffic!</p>
-              <p className="text-xs text-amber-200">Press Down Arrow to switch lanes and avoid water!</p>
+              <p className="text-sm mb-4 text-amber-300">Watch out for potholes, cows, cars, buses, and water clogging!</p>
+              <p className="text-xs text-amber-200">Down Arrow = Switch Lane | Left Arrow = Brake | Space = Jump</p>
               <p className="text-xl animate-pulse">Tap or Press Space to Start</p>
             </div>
           </div>
@@ -1276,8 +1615,9 @@ export default function Game() {
       </div>
 
       <div className="mt-4 text-amber-700 text-center">
-        <p className="text-sm">Press Space / Tap top to Jump | Press Down Arrow / Tap bottom to Switch Lanes</p>
-        <p className="text-xs mt-1 text-amber-600">Watch for the monsoon! Water clogs the roads during rain - switch lanes to avoid!</p>
+        <p className="text-sm">Space/Up = Jump | Down/S = Switch Lane | Left/B = Brake</p>
+        <p className="text-xs mt-1 text-amber-600">Mobile: Tap top to jump, bottom to switch lane, left side to brake</p>
+        <p className="text-xs text-amber-500">Navigate the chaotic streets of Mumbai - watch for traffic, water, and potholes!</p>
       </div>
     </div>
   )
