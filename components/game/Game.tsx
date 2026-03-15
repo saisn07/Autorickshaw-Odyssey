@@ -34,6 +34,14 @@ interface Obstacle {
   type: "pothole" | "cow" | "traffic"
 }
 
+interface WaterClog {
+  x: number
+  y: number
+  width: number
+  wavePhase: number
+  lane: number // 0 = top lane, 1 = bottom lane
+}
+
 interface Vendor {
   x: number
   y: number
@@ -59,6 +67,7 @@ export default function Game() {
     raindrops: [] as Raindrop[],
     obstacles: [] as Obstacle[],
     vendors: [] as Vendor[],
+    waterClogs: [] as WaterClog[],
     groundOffset: 0,
     speed: 5,
     score: 0,
@@ -66,6 +75,10 @@ export default function Game() {
     rainTimer: 0,
     rainDuration: 0,
     nextRainTime: 180,
+    lastDogSpawn: 0,
+    lastCowSpawn: 0,
+    currentLane: 0, // 0 = top, 1 = bottom
+    waterClogTimer: 0,
     autoFrame: 0,
     wheelRotation: 0,
   })
@@ -89,15 +102,27 @@ export default function Game() {
     game.raindrops = []
     game.obstacles = []
     game.vendors = []
+    game.waterClogs = []
     game.groundOffset = 0
     game.speed = 5
     game.score = 0
     game.isRaining = false
     game.rainTimer = 0
     game.nextRainTime = Math.random() * 300 + 200
+    game.lastDogSpawn = 0
+    game.lastCowSpawn = 0
+    game.currentLane = 0
+    game.waterClogTimer = 0
     setScore(0)
     setGameState("playing")
   }, [])
+
+  const switchLane = useCallback(() => {
+    const game = gameRef.current
+    if (gameState === "playing") {
+      game.currentLane = game.currentLane === 0 ? 1 : 0
+    }
+  }, [gameState])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -109,13 +134,24 @@ export default function Game() {
           jump()
         }
       }
+      // Arrow Down or S to switch lanes
+      if ((e.code === "ArrowDown" || e.code === "KeyS") && gameState === "playing") {
+        e.preventDefault()
+        switchLane()
+      }
     }
 
-    const handleTouchStart = () => {
+    const handleTouchStart = (e: TouchEvent) => {
       if (gameState === "start" || gameState === "gameover") {
         startGame()
       } else {
-        jump()
+        // Double tap detection for lane switch
+        const touch = e.touches[0]
+        if (touch.clientY > window.innerHeight / 2) {
+          switchLane()
+        } else {
+          jump()
+        }
       }
     }
 
@@ -126,7 +162,7 @@ export default function Game() {
       window.removeEventListener("keydown", handleKeyDown)
       window.removeEventListener("touchstart", handleTouchStart)
     }
-  }, [gameState, jump, startGame])
+  }, [gameState, jump, startGame, switchLane])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -210,28 +246,44 @@ export default function Game() {
 
     if (game.buildings.length === 0) {
       initBuildings()
-      for (let i = 0; i < 3; i++) {
-        spawnDog()
-      }
+      // Start with just 1 dog
+      spawnDog()
       // Spawn initial vendors at intervals
       for (let i = 0; i < 4; i++) {
         spawnVendor(200 + i * 250)
       }
     }
 
-    // Spawn obstacle
+    // Spawn obstacle - cows are rarer and more random
     const spawnObstacle = () => {
-      const types: ("pothole" | "cow" | "traffic")[] = ["pothole", "cow", "traffic"]
+      game.lastCowSpawn++
+      
+      // Weighted random: cows are much rarer
+      const random = Math.random()
+      let type: "pothole" | "cow" | "traffic"
+      
+      // Cow only spawns after significant delay and with low probability
+      if (random < 0.1 && game.lastCowSpawn > 400 + Math.random() * 600) {
+        type = "cow"
+        game.lastCowSpawn = 0
+      } else if (random < 0.5) {
+        type = "pothole"
+      } else {
+        type = "traffic"
+      }
+      
       game.obstacles.push({
         x: canvas.width + 50,
         y: GROUND_Y,
-        type: types[Math.floor(Math.random() * types.length)],
+        type: type,
       })
     }
 
     // Draw autorickshaw
     const drawAutorickshaw = (x: number, y: number) => {
-      const baseY = GROUND_Y - 45 + y
+      // Lane offset: lane 0 = top of road, lane 1 = bottom of road
+      const laneOffset = game.currentLane * 25
+      const baseY = GROUND_Y - 45 + y + laneOffset
       game.wheelRotation += game.speed * 0.1
       game.autoFrame++
 
@@ -674,6 +726,79 @@ export default function Game() {
       ctx.stroke()
     }
 
+    // Draw water clogging/puddle
+    const drawWaterClog = (clog: WaterClog) => {
+      ctx.save()
+      ctx.translate(clog.x, clog.y)
+      clog.wavePhase += 0.08
+
+      // Main water body with wave effect
+      const gradient = ctx.createLinearGradient(0, -5, 0, 15)
+      gradient.addColorStop(0, "rgba(100, 149, 237, 0.7)")
+      gradient.addColorStop(0.5, "rgba(70, 130, 180, 0.8)")
+      gradient.addColorStop(1, "rgba(47, 79, 79, 0.9)")
+      
+      ctx.fillStyle = gradient
+      ctx.beginPath()
+      ctx.moveTo(-clog.width / 2, 5)
+      // Wavy top surface
+      for (let i = 0; i <= clog.width; i += 10) {
+        const waveY = Math.sin(clog.wavePhase + i * 0.1) * 3
+        ctx.lineTo(-clog.width / 2 + i, waveY)
+      }
+      ctx.lineTo(clog.width / 2, 12)
+      ctx.lineTo(-clog.width / 2, 12)
+      ctx.closePath()
+      ctx.fill()
+
+      // Ripple effects
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.4)"
+      ctx.lineWidth = 1
+      for (let i = 0; i < 3; i++) {
+        const rippleSize = 8 + Math.sin(clog.wavePhase * 1.5 + i * 2) * 4
+        ctx.beginPath()
+        ctx.ellipse(
+          -20 + i * 20 + Math.sin(clog.wavePhase + i) * 5,
+          4,
+          rippleSize,
+          rippleSize * 0.4,
+          0,
+          0,
+          Math.PI * 2
+        )
+        ctx.stroke()
+      }
+
+      // Debris/leaves floating
+      ctx.fillStyle = "#556B2F"
+      for (let i = 0; i < 2; i++) {
+        const leafX = -15 + i * 25 + Math.sin(clog.wavePhase + i * 3) * 8
+        const leafY = 2 + Math.cos(clog.wavePhase + i) * 2
+        ctx.beginPath()
+        ctx.ellipse(leafX, leafY, 4, 2, clog.wavePhase * 0.5, 0, Math.PI * 2)
+        ctx.fill()
+      }
+
+      // Splashing effect on edges
+      if (Math.sin(clog.wavePhase * 2) > 0.8) {
+        ctx.fillStyle = "rgba(173, 216, 230, 0.6)"
+        ctx.beginPath()
+        ctx.arc(-clog.width / 2 + 5, -2, 3, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.beginPath()
+        ctx.arc(clog.width / 2 - 5, -1, 2, 0, Math.PI * 2)
+        ctx.fill()
+      }
+
+      // Warning reflection/shine
+      ctx.fillStyle = "rgba(255, 255, 255, 0.2)"
+      ctx.beginPath()
+      ctx.ellipse(0, 2, clog.width * 0.3, 4, 0, 0, Math.PI * 2)
+      ctx.fill()
+
+      ctx.restore()
+    }
+
     // Draw building
     const drawBuilding = (building: Building, isFar: boolean) => {
       const groundBase = GROUND_Y - FOOTPATH_HEIGHT
@@ -809,16 +934,17 @@ export default function Game() {
       ctx.fillStyle = gradient
       ctx.fillRect(0, 0, canvas.width, canvas.height)
 
-      // Rain logic
+      // Rain logic - longer rain periods
       game.rainTimer++
       if (!game.isRaining && game.rainTimer >= game.nextRainTime) {
         game.isRaining = true
-        game.rainDuration = Math.random() * 300 + 200
+        // Rain lasts much longer now (8-15 seconds at 60fps)
+        game.rainDuration = Math.random() * 400 + 500
         game.rainTimer = 0
       } else if (game.isRaining && game.rainTimer >= game.rainDuration) {
         game.isRaining = false
         game.rainTimer = 0
-        game.nextRainTime = Math.random() * 400 + 300
+        game.nextRainTime = Math.random() * 300 + 250
         game.raindrops = []
       }
 
@@ -915,9 +1041,13 @@ export default function Game() {
         drawDog(dog)
       })
 
-      // Spawn new dogs occasionally
-      if (Math.random() < 0.005 && game.dogs.length < 5) {
+      // Spawn new dogs occasionally - much less frequent and random timing
+      game.lastDogSpawn++
+      const dogSpawnChance = 0.001 // Very rare
+      const minDogInterval = 600 + Math.random() * 400 // Random interval between 10-17 seconds
+      if (game.lastDogSpawn > minDogInterval && Math.random() < dogSpawnChance && game.dogs.length < 2) {
         spawnDog()
+        game.lastDogSpawn = 0
       }
 
       // Update and draw vendors
@@ -953,6 +1083,31 @@ export default function Game() {
         obstacleTimer = 0
       }
 
+      // Spawn water clogs during/after rain
+      if (game.isRaining) {
+        game.waterClogTimer++
+        // Spawn water clogs at random intervals during rain
+        if (game.waterClogTimer > 180 + Math.random() * 200 && game.waterClogs.length < 3) {
+          const lane = Math.random() > 0.5 ? 0 : 1
+          game.waterClogs.push({
+            x: canvas.width + 100,
+            y: GROUND_Y + (lane === 0 ? 15 : 45),
+            width: 80 + Math.random() * 40,
+            wavePhase: Math.random() * Math.PI * 2,
+            lane: lane,
+          })
+          game.waterClogTimer = 0
+        }
+      }
+
+      // Update and draw water clogs
+      game.waterClogs = game.waterClogs.filter((clog) => {
+        clog.x -= game.speed
+        if (clog.x < -100) return false
+        drawWaterClog(clog)
+        return true
+      })
+
       // Update and draw obstacles
       game.obstacles = game.obstacles.filter((obstacle) => {
         obstacle.x -= game.speed
@@ -976,11 +1131,37 @@ export default function Game() {
       drawAutorickshaw(game.autoX, game.autoY)
 
       // Collision detection
+      const laneOffset = game.currentLane * 25
       const autoHitbox = {
         x: game.autoX - 25,
-        y: GROUND_Y - 45 + game.autoY,
+        y: GROUND_Y - 45 + game.autoY + laneOffset,
         width: 70,
         height: 40,
+      }
+
+      // Check water clog collisions - hitting water in your lane causes game over
+      for (const clog of game.waterClogs) {
+        // Only collide if auto is in the same lane as the water
+        if (game.currentLane === clog.lane) {
+          const clogHitbox = {
+            x: clog.x - clog.width / 2,
+            y: clog.y - 8,
+            width: clog.width,
+            height: 16,
+          }
+          if (
+            autoHitbox.x < clogHitbox.x + clogHitbox.width &&
+            autoHitbox.x + autoHitbox.width > clogHitbox.x &&
+            autoHitbox.y < clogHitbox.y + clogHitbox.height &&
+            autoHitbox.y + autoHitbox.height > clogHitbox.y &&
+            !game.isJumping
+          ) {
+            setGameState("gameover")
+            if (game.score > highScore) {
+              setHighScore(game.score)
+            }
+          }
+        }
       }
 
       for (const obstacle of game.obstacles) {
@@ -1020,11 +1201,13 @@ export default function Game() {
 
       // Weather indicator
       if (game.isRaining) {
-        ctx.fillStyle = "rgba(0, 0, 0, 0.3)"
-        ctx.fillRect(10, 10, 100, 30)
+        ctx.fillStyle = "rgba(0, 0, 0, 0.5)"
+        ctx.fillRect(10, 10, 180, 40)
         ctx.fillStyle = "#FFF"
         ctx.font = "14px Arial"
-        ctx.fillText("🌧️ Drizzling", 20, 30)
+        ctx.fillText("MONSOON! Watch for", 20, 25)
+        ctx.fillStyle = "#87CEEB"
+        ctx.fillText("water clogging ahead!", 20, 42)
       }
 
       animationId = requestAnimationFrame(gameLoop)
@@ -1070,7 +1253,8 @@ export default function Game() {
             <div className="text-white text-center">
               <h2 className="text-3xl font-bold mb-4">🛺 Ready to Roll!</h2>
               <p className="text-lg mb-2">Navigate through the busy streets</p>
-              <p className="text-sm mb-4 text-amber-300">Watch out for potholes, cows, and traffic cones!</p>
+              <p className="text-sm mb-4 text-amber-300">Watch out for potholes, cows, water clogging, and traffic!</p>
+              <p className="text-xs text-amber-200">Press Down Arrow to switch lanes and avoid water!</p>
               <p className="text-xl animate-pulse">Tap or Press Space to Start</p>
             </div>
           </div>
@@ -1092,8 +1276,8 @@ export default function Game() {
       </div>
 
       <div className="mt-4 text-amber-700 text-center">
-        <p className="text-sm">Press Space / Tap to Jump</p>
-        <p className="text-xs mt-1 text-amber-600">Watch for the drizzle! 🌧️ Dogs roam the footpaths 🐕</p>
+        <p className="text-sm">Press Space / Tap top to Jump | Press Down Arrow / Tap bottom to Switch Lanes</p>
+        <p className="text-xs mt-1 text-amber-600">Watch for the monsoon! Water clogs the roads during rain - switch lanes to avoid!</p>
       </div>
     </div>
   )
