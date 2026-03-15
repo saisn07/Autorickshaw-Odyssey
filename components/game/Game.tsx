@@ -34,6 +34,14 @@ interface Obstacle {
   type: "pothole" | "cow" | "traffic"
 }
 
+interface Vendor {
+  x: number
+  y: number
+  type: "chaiwallah" | "fruitseller" | "newspaper" | "samosa" | "flowers"
+  frame: number
+  actionPhase: number
+}
+
 export default function Game() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [gameState, setGameState] = useState<"start" | "playing" | "gameover">("start")
@@ -50,6 +58,7 @@ export default function Game() {
     dogs: [] as Dog[],
     raindrops: [] as Raindrop[],
     obstacles: [] as Obstacle[],
+    vendors: [] as Vendor[],
     groundOffset: 0,
     speed: 5,
     score: 0,
@@ -79,6 +88,7 @@ export default function Game() {
     game.dogs = []
     game.raindrops = []
     game.obstacles = []
+    game.vendors = []
     game.groundOffset = 0
     game.speed = 5
     game.score = 0
@@ -186,10 +196,26 @@ export default function Game() {
       })
     }
 
+    // Initialize vendors on footpath
+    const spawnVendor = (initialX?: number) => {
+      const types: Vendor["type"][] = ["chaiwallah", "fruitseller", "newspaper", "samosa", "flowers"]
+      game.vendors.push({
+        x: initialX ?? canvas.width + Math.random() * 200,
+        y: GROUND_Y - FOOTPATH_HEIGHT + 5,
+        type: types[Math.floor(Math.random() * types.length)],
+        frame: 0,
+        actionPhase: Math.random() * Math.PI * 2,
+      })
+    }
+
     if (game.buildings.length === 0) {
       initBuildings()
       for (let i = 0; i < 3; i++) {
         spawnDog()
+      }
+      // Spawn initial vendors at intervals
+      for (let i = 0; i < 4; i++) {
+        spawnVendor(200 + i * 250)
       }
     }
 
@@ -369,6 +395,271 @@ export default function Game() {
       ctx.lineWidth = 3
       ctx.strokeStyle = dog.color
       ctx.stroke()
+
+      ctx.restore()
+    }
+
+    // Draw vendor
+    const drawVendor = (vendor: Vendor) => {
+      ctx.save()
+      ctx.translate(vendor.x, vendor.y)
+      vendor.frame++
+      vendor.actionPhase += 0.05
+
+      const bobble = Math.sin(vendor.actionPhase) * 2
+
+      switch (vendor.type) {
+        case "chaiwallah":
+          // Cart/stall
+          ctx.fillStyle = "#8B4513"
+          ctx.fillRect(-25, 0, 50, 25)
+          ctx.fillStyle = "#654321"
+          ctx.fillRect(-25, 25, 50, 5)
+          
+          // Wheels
+          ctx.fillStyle = "#333"
+          ctx.beginPath()
+          ctx.arc(-18, 32, 6, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(18, 32, 6, 0, Math.PI * 2)
+          ctx.fill()
+          
+          // Kettle/pot
+          ctx.fillStyle = "#C0C0C0"
+          ctx.beginPath()
+          ctx.arc(-5, -5, 12, 0, Math.PI * 2)
+          ctx.fill()
+          
+          // Steam animation
+          for (let i = 0; i < 3; i++) {
+            ctx.fillStyle = `rgba(255, 255, 255, ${0.5 - i * 0.15})`
+            ctx.beginPath()
+            ctx.arc(-5 + Math.sin(vendor.actionPhase + i) * 3, -20 - i * 8 + bobble, 4 - i, 0, Math.PI * 2)
+            ctx.fill()
+          }
+          
+          // Cups
+          ctx.fillStyle = "#D2691E"
+          ctx.fillRect(10, -2, 8, 10)
+          ctx.fillRect(20, -2, 8, 10)
+          
+          // Vendor person
+          ctx.fillStyle = "#F5DEB3"
+          ctx.beginPath()
+          ctx.arc(-35, -15 + bobble, 8, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = "#8B0000"
+          ctx.fillRect(-42, -7 + bobble, 14, 25)
+          // Arm pouring
+          ctx.fillStyle = "#F5DEB3"
+          ctx.fillRect(-28, -5 + bobble, 15, 5)
+          break
+
+        case "fruitseller":
+          // Cart
+          ctx.fillStyle = "#228B22"
+          ctx.fillRect(-30, 5, 60, 20)
+          
+          // Wheels
+          ctx.fillStyle = "#333"
+          ctx.beginPath()
+          ctx.arc(-20, 30, 6, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(20, 30, 6, 0, Math.PI * 2)
+          ctx.fill()
+          
+          // Umbrella
+          ctx.fillStyle = "#FF6347"
+          ctx.beginPath()
+          ctx.arc(0, -35, 35, Math.PI, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = "#8B4513"
+          ctx.fillRect(-2, -35, 4, 40)
+          
+          // Fruits - oranges
+          ctx.fillStyle = "#FFA500"
+          for (let i = 0; i < 4; i++) {
+            ctx.beginPath()
+            ctx.arc(-15 + i * 10, 0, 6, 0, Math.PI * 2)
+            ctx.fill()
+          }
+          // Apples
+          ctx.fillStyle = "#FF0000"
+          for (let i = 0; i < 3; i++) {
+            ctx.beginPath()
+            ctx.arc(-10 + i * 10, -10, 5, 0, Math.PI * 2)
+            ctx.fill()
+          }
+          // Bananas
+          ctx.fillStyle = "#FFE135"
+          ctx.beginPath()
+          ctx.ellipse(20, -5, 8, 4, 0.3, 0, Math.PI * 2)
+          ctx.fill()
+          
+          // Vendor
+          ctx.fillStyle = "#F5DEB3"
+          ctx.beginPath()
+          ctx.arc(40, -10 + bobble, 8, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = "#4169E1"
+          ctx.fillRect(33, -2 + bobble, 14, 25)
+          break
+
+        case "newspaper":
+          // Stand
+          ctx.fillStyle = "#A0522D"
+          ctx.fillRect(-20, 0, 40, 30)
+          
+          // Papers stacked
+          ctx.fillStyle = "#F5F5DC"
+          for (let i = 0; i < 5; i++) {
+            ctx.fillRect(-15 + i * 2, -5 - i * 3, 25, 3)
+          }
+          
+          // Magazine rack
+          ctx.fillStyle = "#8B4513"
+          ctx.fillRect(-18, -20, 36, 15)
+          
+          // Colorful magazines
+          const colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7"]
+          for (let i = 0; i < 5; i++) {
+            ctx.fillStyle = colors[i]
+            ctx.fillRect(-15 + i * 7, -18, 6, 12)
+          }
+          
+          // Vendor sitting
+          ctx.fillStyle = "#F5DEB3"
+          ctx.beginPath()
+          ctx.arc(35, 5 + bobble, 8, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = "#696969"
+          ctx.fillRect(28, 13 + bobble, 14, 20)
+          // Reading paper
+          ctx.fillStyle = "#F5F5DC"
+          ctx.fillRect(20, 8 + bobble, 12, 15)
+          break
+
+        case "samosa":
+          // Cart with glass case
+          ctx.fillStyle = "#CD853F"
+          ctx.fillRect(-25, 5, 50, 20)
+          
+          // Glass case
+          ctx.fillStyle = "rgba(200, 230, 255, 0.5)"
+          ctx.fillRect(-22, -20, 44, 25)
+          ctx.strokeStyle = "#888"
+          ctx.strokeRect(-22, -20, 44, 25)
+          
+          // Samosas inside
+          ctx.fillStyle = "#DAA520"
+          for (let i = 0; i < 3; i++) {
+            ctx.beginPath()
+            ctx.moveTo(-12 + i * 12, -5)
+            ctx.lineTo(-6 + i * 12, -15)
+            ctx.lineTo(0 + i * 12, -5)
+            ctx.closePath()
+            ctx.fill()
+          }
+          
+          // Frying pan with steam
+          ctx.fillStyle = "#2F2F2F"
+          ctx.beginPath()
+          ctx.ellipse(35, 0, 15, 8, 0, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = "#DAA520"
+          ctx.beginPath()
+          ctx.moveTo(30, -3)
+          ctx.lineTo(35, -10)
+          ctx.lineTo(40, -3)
+          ctx.closePath()
+          ctx.fill()
+          
+          // Sizzle/steam
+          for (let i = 0; i < 2; i++) {
+            ctx.fillStyle = `rgba(255, 255, 255, ${0.4 - i * 0.15})`
+            ctx.beginPath()
+            ctx.arc(35 + Math.sin(vendor.actionPhase * 2 + i) * 4, -15 - i * 6, 3, 0, Math.PI * 2)
+            ctx.fill()
+          }
+          
+          // Wheels
+          ctx.fillStyle = "#333"
+          ctx.beginPath()
+          ctx.arc(-18, 30, 5, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(18, 30, 5, 0, Math.PI * 2)
+          ctx.fill()
+          
+          // Vendor
+          ctx.fillStyle = "#F5DEB3"
+          ctx.beginPath()
+          ctx.arc(-40, -5 + bobble, 8, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = "#FFF"
+          ctx.fillRect(-47, 3 + bobble, 14, 22)
+          // Chef hat
+          ctx.fillStyle = "#FFF"
+          ctx.fillRect(-45, -18 + bobble, 10, 10)
+          break
+
+        case "flowers":
+          // Flower basket/cart
+          ctx.fillStyle = "#8B4513"
+          ctx.beginPath()
+          ctx.moveTo(-25, 25)
+          ctx.lineTo(-20, 0)
+          ctx.lineTo(20, 0)
+          ctx.lineTo(25, 25)
+          ctx.closePath()
+          ctx.fill()
+          
+          // Colorful flowers
+          const flowerColors = ["#FF69B4", "#FF6347", "#FFD700", "#FF4500", "#DA70D6", "#FFA07A"]
+          for (let i = 0; i < 12; i++) {
+            const fx = -15 + (i % 4) * 10
+            const fy = -5 - Math.floor(i / 4) * 10
+            ctx.fillStyle = flowerColors[i % flowerColors.length]
+            ctx.beginPath()
+            ctx.arc(fx, fy + Math.sin(vendor.actionPhase + i) * 1.5, 6, 0, Math.PI * 2)
+            ctx.fill()
+            // Flower center
+            ctx.fillStyle = "#FFD700"
+            ctx.beginPath()
+            ctx.arc(fx, fy + Math.sin(vendor.actionPhase + i) * 1.5, 2, 0, Math.PI * 2)
+            ctx.fill()
+          }
+          
+          // Garland strings
+          ctx.strokeStyle = "#FF69B4"
+          ctx.lineWidth = 3
+          ctx.beginPath()
+          ctx.moveTo(-20, -25)
+          ctx.quadraticCurveTo(0, -15 + bobble, 20, -25)
+          ctx.stroke()
+          
+          ctx.strokeStyle = "#FFA500"
+          ctx.beginPath()
+          ctx.moveTo(-18, -30)
+          ctx.quadraticCurveTo(0, -22 + bobble, 18, -30)
+          ctx.stroke()
+          
+          // Vendor (woman with flowers)
+          ctx.fillStyle = "#F5DEB3"
+          ctx.beginPath()
+          ctx.arc(40, -5 + bobble, 8, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = "#FF1493"
+          ctx.fillRect(33, 3 + bobble, 14, 22)
+          // Flower in hair
+          ctx.fillStyle = "#FF6347"
+          ctx.beginPath()
+          ctx.arc(45, -12 + bobble, 4, 0, Math.PI * 2)
+          ctx.fill()
+          break
+      }
 
       ctx.restore()
     }
@@ -627,6 +918,23 @@ export default function Game() {
       // Spawn new dogs occasionally
       if (Math.random() < 0.005 && game.dogs.length < 5) {
         spawnDog()
+      }
+
+      // Update and draw vendors
+      game.vendors = game.vendors.filter((vendor) => {
+        vendor.x -= game.speed * 0.6
+        if (vendor.x < -80) return false
+        drawVendor(vendor)
+        return true
+      })
+
+      // Spawn new vendors at intervals
+      if (game.vendors.length < 4) {
+        const lastVendor = game.vendors[game.vendors.length - 1]
+        const minDistance = 300
+        if (!lastVendor || lastVendor.x < canvas.width - minDistance) {
+          spawnVendor()
+        }
       }
 
       // Update and draw raindrops
